@@ -50,8 +50,15 @@ static class Comparar
                     AgenteHibridoV2 yo = null;
                     // "BASE" = la V4b entregable (Agents/AgenteHibrido.cs, abstracción v1).
                     var tt = t;
-                    asientos.Add(("Yo", v == "BASE" ? (Func<IPokerAgent>)(() => new AgenteHibrido { Config = new AgenteHibrido.Params { Seed = 77 + tt } })
-                                                    : () => yo = new AgenteHibridoV2 { Config = Conf(v, tt) }));
+                    
+                    asientos.Add(("Yo",
+                                v == "BASE" ? (Func<IPokerAgent>)(() => new AgenteHibrido { Config = new AgenteHibrido.Params { Seed = 77 + tt } })
+                                : v == "V3"   ? (Func<IPokerAgent>)(() => new AgenteHibridoV3 { Config = new AgenteHibridoV3.Params { Seed = 77 + tt } })
+                                : v == "V3-E" ? (Func<IPokerAgent>)(() => new AgenteHibridoV3 { Config = new AgenteHibridoV3.Params { Seed = 77 + tt, ExploiterPlus = true } })
+                                : v == "V3-R"  ? (Func<IPokerAgent>)(() => new AgenteHibridoV3 { Config = new AgenteHibridoV3.Params { Seed = 77 + tt, RangePost = true } })
+                                : v == "V3-ER" ? (Func<IPokerAgent>)(() => new AgenteHibridoV3 { Config = new AgenteHibridoV3.Params { Seed = 77 + tt, ExploiterPlus = true, RangePost = true } })
+                                :               (Func<IPokerAgent>)(() => yo = new AgenteHibridoV2 { Config = Conf(v, tt) })));
+
                     for (int r = 0; r < pool.Rivales.Length; r++) asientos.Add(("R" + r, pool.Rivales[r]));
                     asientos = asientos.OrderBy(_ => rng.Next()).ToList();
                     var mesa = new PokerTable(GameConfig.Training(seed: rng.Next()));
@@ -104,6 +111,15 @@ static class Comparar
         {
             var r = Inner.GetAction(o);
             Dec++;
+
+            if (A == null && Inner is AgenteHibridoV3 c3) {
+                var t3 = c3.LastTrace;
+                if (t3.Source != null && t3.Source.StartsWith("cfr")) Cfr++;
+                if (t3.Lambda > 0) Mix++;
+                if (t3.Ms > MsMax) MsMax = t3.Ms;
+                return r;
+            }
+
             if (A == null) { if (Inner is AgenteHibrido b) { if (b.LastTrace.Source != null && b.LastTrace.Source.StartsWith("cfr")) Cfr++; if (b.LastTrace.Lambda > 0) Mix++; if (b.LastTrace.Ms > MsMax) MsMax = b.LastTrace.Ms; } return r; }
             var tr = A.LastTrace;
             if (tr.Source != null && tr.Source.StartsWith("cfr")) Cfr++;
