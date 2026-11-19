@@ -1,0 +1,9 @@
+bin/
+obj/
+*.user
+.vs/
+TestResults/
+dist/
+# The Unity .gitignore at the repo root ignores *.csproj / *.sln (Unity regenerates its own). The SDK projects are source: keep them.
+!*.csproj
+!*.sln

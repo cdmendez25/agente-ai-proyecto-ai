@@ -1,0 +1,17 @@
+# Compilación de .NET (se regenera sola al ejecutar run.sh / entrenar.sh)
+bin/
+obj/
+.vs/
+*.user
+TestResults/
+
+# Sistema / editores
+.DS_Store
+.idea/
+.vscode/
+
+# Archivos pesados que NO van al repo (se comparten aparte)
+*.zip
+
+# El motor del SDK SÍ debe subirse (sin él no compila nada)
+!Kit_AgentsPoker_SDK/lib/*.dll
