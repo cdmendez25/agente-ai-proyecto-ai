@@ -38,7 +38,13 @@ public sealed class AgenteHibrido : IPokerAgent, IHandObserver
         public double PurifyTau = 0.0;
         /// <summary>0 = mezcla lineal (V3), 1 = ajuste por EV (V3b). Por defecto V3b: mejor en la comparación de 1 000 mesas.</summary>
         public int MixMode = 1;
-        public bool UseCfr = true, UseExploiter = true, UseTournament = true, AdvancedTournament = false;
+        /// <summary>AdvancedTournament = capa T2. Activada SOLO en la mesa final (T2OnlyFinal): ahí mejoró +2,6 ± 1,5 pp
+        /// (1 000 mesas); en rondas clasificatorias el efecto dependía del rival (+7,3 contra el Mixto, −4,2 contra Heuristic×5).</summary>
+        public bool UseCfr = true, UseExploiter = true, UseTournament = true, AdvancedTournament = true, T2OnlyFinal = true;
+        /// <summary>T2: fuerza con la que se inclina la política hacia la acción con más P(clasificar) (últimas 10 manos / antes).</summary>
+        public double T2BetaLate = 1.0, T2BetaEarly = 0.3;
+        /// <summary>T2 solo actúa si quedan al menos estos jugadores con fichas (en heads-up empeoraba).</summary>
+        public int T2MinPlayers = 3;
         /// <summary>null = semilla no determinista (torneo). Fijarla en el laboratorio para reproducir.</summary>
         public int? Seed = null;
 
@@ -1018,6 +1024,137 @@ public sealed class AgenteHibrido : IPokerAgent, IHandObserver
     }
 
     // =====================================================================================
+    // TournamentT2 (arquitectura §10, T2): probabilidad de clasificar (o de quedar 1.º en la final) por acción.
+    // Para cada acción se imaginan sus resultados posibles (retirarse / ganar / perder / todos se retiran),
+    // se calculan las fichas de cada jugador después y, con un modelo de "carrera" para las manos que quedan,
+    // P(clasificar). La política se inclina hacia la acción con más P(clasificar). Se activa con
+    // Params.AdvancedTournament.
+    // =====================================================================================
+    private sealed class TournamentT2
+    {
+        private readonly double[] _chips = new double[16], _after = new double[16], _dp = new double[17];
+        public double Uf, Uc, Ur;
+
+        public void Adjust(PlayerObservation o, double[] pi, double strength, OpponentModel model, Params p)
+        {
+            var m = o.Match;
+            int n = o.Players.Count;
+            if (n > 16) return;
+            int alive = 0;
+            for (int j = 0; j < n; j++)
+            {
+                var pl = o.Players[j];
+                _chips[j] = pl.Stack + pl.CommittedThisHand;
+                if (_chips[j] > 0 || j == o.Seat) alive++;
+            }
+            if (alive < p.T2MinPlayers) return;
+            if (p.T2OnlyFinal && !m.IsFinalTable) return;
+            int q = m.IsFinalTable ? 1 : (m.QualifyingSpots > 0 ? m.QualifyingSpots : Math.Max(1, Math.Min(3, alive - 1)));
+            int h = m.HasHandLimit ? Math.Max(1, m.HandsRemaining) : 30;
+            int resto = h - 1;                                          // manos que quedan después de esta
+
+            // Rivales activos y probabilidades simples del resultado.
+            int k = 0; double fAll = 1;
+            for (int j = 0; j < n; j++)
+            {
+                var pl = o.Players[j];
+                if (j == o.Seat || !pl.IsActive) continue;
+                k++;
+                var st = model.Get(pl.Name);
+                fAll *= st == null ? 0.40 : st.Ftb;
+            }
+            if (k == 0) return;
+            double win = Math.Pow(Math.Max(0.01, Math.Min(0.99, strength)), k);   // aprox. de ganar contra k rivales
+            double P = o.Pot, C = o.ToCall, R = o.RaiseCost;
+            double myStack = o.MyStack;
+
+            // FOLD: me quedo con mi stack; el bote se lo lleva algún rival activo (promedio).
+            Uf = AvgLose(o, myStack, P, q, resto, p);
+            // CALL: gano el bote (+lo que pongo) o lo pierdo.
+            double potC = P + C;
+            Uc = win * Qual(o, -1, myStack - C + potC, 0, q, resto, p) + (1 - win) * AvgLose(o, myStack - C, potC, q, resto, p);
+            // RAISE: todos se retiran (gano P) o me pagan (gano o pierdo un bote mayor).
+            Ur = double.NaN;
+            if (o.CanRaise)
+            {
+                double potR = P + R + k * o.BetSize;                       // aprox.: cada rival que paga pone ~1 apuesta
+                double called = win * Qual(o, -1, myStack - R + potR, 0, q, resto, p)
+                              + (1 - win) * AvgLose(o, myStack - R, potR, q, resto, p);
+                Ur = fAll * Qual(o, -1, myStack + P, 0, q, resto, p) + (1 - fAll) * called;
+            }
+
+            // Inclinar la política: cada punto porcentual de P(clasificar) que se pierde multiplica por e^(-beta).
+            double beta = h <= 10 ? p.T2BetaLate : p.T2BetaEarly;
+            double best = Math.Max(Uc, double.IsNaN(Ur) ? double.NegativeInfinity : Ur);
+            if (o.ToCall > 0) best = Math.Max(best, Uf);
+            double[] u = { Uf, Uc, double.IsNaN(Ur) ? double.NegativeInfinity : Ur };
+            double s = 0;
+            for (int a = 0; a < 3; a++)
+            {
+                if (pi[a] <= 0 || double.IsNegativeInfinity(u[a])) { pi[a] = 0; continue; }
+                pi[a] *= Math.Exp(beta * (u[a] - best) / 0.01);
+                s += pi[a];
+            }
+            if (s > 0) for (int a = 0; a < 3; a++) pi[a] /= s;
+        }
+
+        /// <summary>P(clasificar) promedio si pierdo el bote: lo gana cada rival activo con la misma probabilidad.</summary>
+        private double AvgLose(PlayerObservation o, double myFinal, double pot, int q, int resto, Params p)
+        {
+            double sum = 0; int k = 0;
+            for (int j = 0; j < o.Players.Count; j++)
+            {
+                if (j == o.Seat || !o.Players[j].IsActive) continue;
+                sum += Qual(o, j, myFinal, pot, q, resto, p);
+                k++;
+            }
+            return k == 0 ? Qual(o, -1, myFinal, 0, q, resto, p) : sum / k;
+        }
+
+        /// <summary>
+        /// P(terminar entre los q primeros) si al acabar esta mano tengo myFinal fichas y el rival "ganador" (o nadie, -1)
+        /// suma 'pot' fichas. Lo puesto en la mano por los demás se descuenta de sus fichas.
+        /// Carrera: el neto de cada jugador en las 'resto' manos que quedan ~ Normal(0, σ²·resto), independientes.
+        /// </summary>
+        private double Qual(PlayerObservation o, int ganador, double myFinal, double pot, int q, int resto, Params p)
+        {
+            int n = o.Players.Count;
+            for (int j = 0; j < n; j++)
+            {
+                var pl = o.Players[j];
+                // Fichas tras la mano: lo que les queda detrás + el bote si son el ganador (lo puesto ya está en el bote).
+                _after[j] = pl.Stack + (j == ganador ? pot : 0);
+            }
+            // Poisson-binomial: número de rivales que terminan por encima de mí.
+            Array.Clear(_dp, 0, n + 1);
+            _dp[0] = 1;
+            int cnt = 0;
+            double escala = p.SigmaHand * Math.Sqrt(2.0 * Math.Max(0, resto));
+            for (int j = 0; j < n; j++)
+            {
+                if (j == o.Seat) continue;
+                if (_after[j] <= 0 && !o.Players[j].IsActive) continue;          // eliminado
+                double d = _after[j] - myFinal;
+                double pj = resto == 0 || escala <= 0 ? (d > 0 ? 1 : (d == 0 ? 0.5 : 0)) : Phi(d / escala);
+                for (int c = cnt + 1; c >= 1; c--) _dp[c] = _dp[c] * (1 - pj) + _dp[c - 1] * pj;
+                _dp[0] *= 1 - pj;
+                cnt++;
+            }
+            double r = 0;
+            for (int c = 0; c < q && c <= cnt; c++) r += _dp[c];
+            return r;
+        }
+
+        /// <summary>Distribución normal acumulada (aprox. de Abramowitz y Stegun 7.1.26).</summary>
+        private static double Phi(double x)
+        {
+            double t = 1 / (1 + 0.3275911 * Math.Abs(x) / Math.Sqrt(2));
+            double y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.Exp(-x * x / 2);
+            return x >= 0 ? 0.5 * (1 + y) : 0.5 * (1 - y);
+        }
+    }
+
+    // =====================================================================================
     // Estado de instancia (nada static mutable).
     // =====================================================================================
     private Random _rng;
@@ -1028,6 +1165,7 @@ public sealed class AgenteHibrido : IPokerAgent, IHandObserver
     private readonly OpponentModel _model = new OpponentModel();
     private readonly Exploiter _exp = new Exploiter();
     private readonly TournamentContext _tour = new TournamentContext();
+    private readonly TournamentT2 _t2 = new TournamentT2();
 
     public AgenteHibrido() { }
 
@@ -1094,6 +1232,7 @@ public sealed class AgenteHibrido : IPokerAgent, IHandObserver
 
             // Paso 7b: ajuste de riesgo del torneo.
             if (Config.UseTournament) _tour.Apply(_pi, strength);
+            if (Config.AdvancedTournament) { ActionValidator.Mask(_pi, o); _t2.Adjust(o, _pi, strength, _model, Config); }
 
             // Paso 8: filtrar por acciones legales, renormalizar y elegir.
             ActionType a = ActionValidator.Sample(_pi, o, _rng);

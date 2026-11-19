@@ -45,10 +45,11 @@ if (args.Length > 0 && args[0] == "entrenar-cfr")
 }
 if (args.Length > 0 && args[0] == "comparar")
 {
-    // bash entrenar.sh comparar [mesas] [V0,V1,V2,V3,V3b,V4]
+    // bash entrenar.sh comparar [mesas] [BASE,V3-ER,...] [pools: 1,2,3,4,5,6,7]
     int mesasC = args.Length > 1 ? int.Parse(args[1]) : 500;
-    var vers = (args.Length > 2 ? args[2] : "V0,V1,V2,V3,V3b,V4").Split(',');
-    Comparar.Ejecutar(mesasC, vers);
+    var vers = (args.Length > 2 ? args[2] : "BASE,V4b").Split(',');
+    int[] poolsC = args.Length > 3 ? args[3].Split(',').Select(int.Parse).ToArray() : null;
+    Comparar.Ejecutar(mesasC, vers, poolsC);
     return;
 }
 if (args.Length > 0 && args[0] == "validar-sim")

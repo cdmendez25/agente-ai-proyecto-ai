@@ -38,17 +38,40 @@ sealed class EsMccfr
         for (int i = 0; i < K; i++) FineToCoarse[i] = -1;
     }
 
+    /// <summary>
+    /// Linear CFR por descuentos (Brown y Sandholm 2019; usado en Pluribus): cada DiscountEvery repartos, mientras
+    /// Iterations &lt;= DiscountUntil, se multiplican regrets y estrategia acumulada por k/(k+1) (k = número de periodos).
+    /// Efecto: lo aprendido al principio (cuando la estrategia era mala) pesa menos y se converge antes.
+    /// DiscountEvery = 0 desactiva el descuento (ES-MCCFR estándar).
+    /// </summary>
+    public long DiscountEvery = 2_000_000, DiscountUntil = 200_000_000;
+    public int Discounts;
+
     public void Train(double seconds, int threads, int seed)
     {
         var sw = Stopwatch.StartNew();
         long start = Iterations;
+        long next = DiscountEvery > 0 ? (Iterations / DiscountEvery + 1) * DiscountEvery : long.MaxValue;
         var tareas = Enumerable.Range(0, threads).Select(w => Task.Run(() => Worker(w, seed, sw, seconds))).ToArray();
-        while (!Task.WaitAll(tareas, 10_000))
+        int tick = 0;
+        while (!Task.WaitAll(tareas, 1_000))
         {
-            long it = Interlocked.Read(ref Iterations) - start;
-            Console.Write($"\r  {sw.Elapsed.TotalSeconds:F0}/{seconds:F0} s   {it:N0} repartos   {it / sw.Elapsed.TotalSeconds:N0}/s   ");
+            long now = Interlocked.Read(ref Iterations);
+            if (now >= next && now <= DiscountUntil)
+            {
+                double k = now / (double)DiscountEvery;
+                double f = k / (k + 1);
+                for (int i = 0; i < R.Length; i++) { R[i] *= f; S[i] *= f; }
+                Discounts++;
+                while (next <= now) next += DiscountEvery;
+            }
+            if (++tick % 10 == 0)
+            {
+                long it = now - start;
+                Console.Write($"\r  {sw.Elapsed.TotalSeconds:F0}/{seconds:F0} s   {it:N0} repartos   {it / sw.Elapsed.TotalSeconds:N0}/s   descuentos {Discounts}   ");
+            }
         }
-        Console.WriteLine($"\r  Entrenamiento: {Iterations - start:N0} repartos en {sw.Elapsed.TotalSeconds:F0} s ({(Iterations - start) / sw.Elapsed.TotalSeconds:N0}/s, {threads} hilos)      ");
+        Console.WriteLine($"\r  Entrenamiento: {Iterations - start:N0} repartos en {sw.Elapsed.TotalSeconds:F0} s ({(Iterations - start) / sw.Elapsed.TotalSeconds:N0}/s, {threads} hilos, {Discounts} descuentos lineales)      ");
     }
 
     private void Worker(int w, int seed, Stopwatch sw, double seconds)
