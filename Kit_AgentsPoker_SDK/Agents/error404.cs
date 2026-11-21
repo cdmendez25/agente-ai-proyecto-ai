@@ -4,7 +4,7 @@ using System.Diagnostics;
 using AgentsPoker.Core;
 
 /// <summary>
-/// error404: ES-MCCFR (estrategia base) + explotador (modelo de rivales, Monte Carlo, EV) + orquestador.
+/// Error404: ES-MCCFR (estrategia base) + explotador (modelo de rivales, Monte Carlo, EV) + orquestador.
 /// Arquitectura vigente: Arquitectura_Agente_Poker_Actualizada.pdf. Detalle matemático: DISENO_AGENTE.md.
 /// Hoja de ruta por partes: HOJA_DE_RUTA.md (raíz del proyecto).
 ///
@@ -19,7 +19,7 @@ using AgentsPoker.Core;
 /// Reglas del archivo (ver diseño 0.3 y 5.1): C# 9 / netstandard 2.1; sin estado static mutable;
 /// no escribir en este archivo las subcadenas que vigila el detector del workbench (lista en el diseño 0.3).
 /// </summary>
-public sealed class error404 : IPokerAgent, IHandObserver
+public sealed class Error404 : IPokerAgent, IHandObserver
 {
     // =====================================================================================
     // Configuración (diseño 5.3 y apéndice 10). Instancia: el laboratorio puede sustituirla.
@@ -2822,7 +2822,7 @@ public sealed class error404 : IPokerAgent, IHandObserver
         return Math.Sqrt((_netN * var + k * prior * prior) / (_netN + k));
     }
 
-    public error404() { }
+    public Error404() { }
 
     public void Initialize(string agentName)
     {
